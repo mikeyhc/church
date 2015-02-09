@@ -35,6 +35,8 @@ chat_to_server(StreamPair) :-
     read_line(StreamPair, NewChar, Line),!,
     maplist(atom_codes, Line, TmpStrLine),
     flatten(TmpStrLine, StrLine),
+    atom_codes(DebugLine, StrLine),
+    debug_message("message: ~w", [DebugLine]),
     catch(parse_server_msg(Msg, StrLine, []),
           Exception, 
           handle_error(StreamPair, Exception)),!,
@@ -52,7 +54,9 @@ handle_error(StreamPair, irc_error(433, _, _)) :-
     assert(nick(NewNick)),
     register_nick(StreamPair).
 handle_error(StreamPair, irc_error(451, _, _)) :- 
-    !, register_user(StreamPair).
+    !, register_user(StreamPair), join_bots(StreamPair).
+handle_error(_StreamPair, irc_error(462, _, _)) :-
+    !, debug_message("Reregister attempted and failed", []).
 handle_error(_StreamPair, Exception) :- 
     debug_message("rethrowing: ~w", [Exception]),
     throw(Exception).
@@ -88,6 +92,10 @@ handle_message(channel_msg(Code, _, Msg), _Stream) :-
     debug_message('channel message(~w): ~w', [Code, Msg]).
 handle_message(mode(Mode), _Stream) :-
     debug_message('mode set: ~w', [Mode]).
+handle_message(join(Chan), _Stream) :-
+    debug_message('joined ~w', [Chan]).
+handle_message(topic(_, Channel, Topic), _Stream) :-
+    debug_message('topic(~w): ~w', [Channel, Topic]).
 handle_message(notice(_, 'AUTH', _), Stream) :-
     auth_count(3),
     register_nick(Stream),
@@ -137,6 +145,15 @@ parse_server_msg(mode(Mode)) -->
     { nick(Nick), atom_codes(Nick, SNick) },
     ":", SNick, " MODE ", SNick, " :", nonnl(SMode), eatnl, 
     { atom_codes(Mode, SMode) }.
+parse_server_msg(join(Channel)) -->
+    { nick(Nick), atom_codes(Nick, SNick) },
+    ":", SNick, "!", nonspace(_), " JOIN :", nonspace(SChannel), eatnl,
+    { atom_codes(Channel, SChannel) }.
+parse_server_msg(topic(Server, Channel, Topic)) -->
+    { nick(Nick), atom_codes(Nick, SNick) },
+    ":", nonspace(SServer), " 332 ", SNick, " ", nonspace(SChannel), " :",
+    nonnl(STopic), { atom_codes(Server, SServer), 
+    atom_codes(Channel, SChannel), atom_codes(Topic, STopic) }.
 
 % error cases
 parse_server_msg(false) -->
