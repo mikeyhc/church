@@ -121,6 +121,8 @@ handle_message(ping(Reply)) :-
     get_outstream(Stream),
     debug_message('Sending PONG ~w', [Reply]),
     format(Stream, "PONG :~w~n", Reply).
+handle_message(privmsg(Nick, User, Channel, Message)) :-
+    debug_message("~w ~w(~w): ~w", [ Channel, Nick, User, Message ]).
 handle_message(X) :- throw(no_message_handler(X)).
 
 read_line(_Stream, end_of_file, []) :- throw(exception(end_of_stream)).
@@ -149,11 +151,6 @@ parse_server_msg(info(Code, Server, Message)) -->
     maybe_colon, nonnl(SMessage), eatnl, { atom_codes(Server, SServer), 
     number_codes(Code, SNum), atom_codes(Message, SMessage),
     Code < 100 }.
-parse_server_msg(channel_msg(Code, Server, Message)) -->
-    ":", nonspace(SServer), " ", get_number(SCode), " ", nonspace(_), " ",
-    maybe_colon, nonnl(SMessage), eatnl, { atom_codes(Server, SServer),
-    number_codes(Code, SCode), atom_codes(Message, SMessage),
-    Code >= 200, Code < 300 }.
 parse_server_msg(mode(Mode)) -->
     { nick(Nick), atom_codes(Nick, SNick) },
     ":", SNick, " MODE ", SNick, " :", nonnl(SMode), eatnl, 
@@ -167,6 +164,17 @@ parse_server_msg(topic(Server, Channel, Topic)) -->
     ":", nonspace(SServer), " 332 ", SNick, " ", nonspace(SChannel), " :",
     nonnl(STopic), { atom_codes(Server, SServer), 
     atom_codes(Channel, SChannel), atom_codes(Topic, STopic) }.
+parse_server_msg(channel_msg(Code, Server, Message)) -->
+    ":", nonspace(SServer), " ", get_number(SCode), " ", nonspace(_), " ",
+    maybe_colon, nonnl(SMessage), eatnl, { atom_codes(Server, SServer),
+    number_codes(Code, SCode), atom_codes(Message, SMessage),
+    Code >= 200, Code < 400 }.
+parse_server_msg(privmsg(Nick, User, Channel, Message)) -->
+    { atom_codes('!', [C|_]) },
+    ":", notchar(C, SNick), "!", nonspace(SUser), " PRIVMSG ", 
+    nonspace(SChannel), " :", nonnl(SMessage), eatnl, 
+    { atom_codes(Nick, SNick), atom_codes(User, SUser), 
+    atom_codes(Channel, SChannel), atom_codes(Message, SMessage) }.
 
 % error cases
 parse_server_msg(false) -->
@@ -177,6 +185,9 @@ parse_server_msg(false) -->
 parse_server_msg(false, Msg, _Rem) :- 
     atom_codes(M, Msg),
     throw(exception(unhandled_irc_message, M)).
+
+notchar(C, [H|T]) --> [H], { H \= C }, !, notchar(C, T).
+notchar(_, []) --> [].
 
 maybe_colon --> ":".
 maybe_colon --> [].
