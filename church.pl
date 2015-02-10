@@ -1,6 +1,6 @@
 :- use_module(library(socket)).
 
-:- dynamic church_thread/1, debug/1, auth_count/1, nick/1.
+:- dynamic church_thread/1, debug/1, auth_count/1, nick/1, server_stream/2.
 
 
 debug_message(Msg, Args) :-
@@ -23,41 +23,60 @@ initialize_globals :-
 
 connect_helper(Server, Port) :-
     initialize_globals,
-    setup_call_catcher_cleanup(
-        tcp_socket(Socket),
-        (tcp_connect(Socket, Server:Port, Stream), chat_to_server(Stream)),
-        (exception(E), format("exception: ~w~n", E)),
-        (retractall(church_thread(_)), tcp_close_socket(Socket))).
+    tcp_socket(Socket),
+    catch(handle_connection(Socket, Server, Port),
+          Exception,
+          format("exception: ~w~n", [Exception])),
+    cleanup_connection(Socket).
 
-chat_to_server(StreamPair) :-
-    get_char(StreamPair, Char),
-    eat_nl(StreamPair, Char, NewChar),
-    read_line(StreamPair, NewChar, Line),!,
+% am using the tcp_connect/2 as CentOS 6.5 doesn't support tcp_connect/3
+handle_connection(Socket, Server, Port) :-
+    tcp_connect(Socket, Server:Port),
+    tcp_open_socket(Socket, InStream, OutStream),
+    set_stream(OutStream, buffer(line)),
+    retractall(server_stream(_, _)),
+    assert(server_stream(InStream, OutStream)),
+    chat_to_server.
+
+get_instream(InStream) :- server_stream(InStream, _).
+get_outstream(OutStream) :- server_stream(_, OutStream).
+
+cleanup_connection(Socket) :-
+    server_stream(_InStream, OutStream),
+    format(OutStream, "QUIT~n", []),
+    retractall(church_thread(_)),
+    retractall(server_stream(_, _)),
+    tcp_close_socket(Socket).
+
+chat_to_server :-
+    get_instream(InStream),
+    get_char(InStream, Char),
+    eat_nl(InStream, Char, NewChar),
+    read_line(InStream, NewChar, Line),!,
     maplist(atom_codes, Line, TmpStrLine),
     flatten(TmpStrLine, StrLine),
     atom_codes(DebugLine, StrLine),
     debug_message("message: ~w", [DebugLine]),
     catch(parse_server_msg(Msg, StrLine, []),
           Exception, 
-          handle_error(StreamPair, Exception)),!,
+          handle_error(Exception)),!,
     debug_message("~w", Msg),
-    handle_message(Msg, StreamPair),
-    chat_to_server(StreamPair).
+    handle_message(Msg),
+    chat_to_server.
 
-handle_error(_StreamPair, irc_error(422, _, _)) :-
-    debug_message("No MOTD provided", []).
-handle_error(StreamPair, irc_error(433, _, _)) :-
+append_nick(Tail) :- 
     nick(Nick),
     !, retractall(nick(_)),
-    atom_concat(Nick, '_', NewNick),
+    atom_concat(Nick, Tail, NewNick),
     debug_message("updating nickname to ~w", [NewNick]),
-    assert(nick(NewNick)),
-    register_nick(StreamPair).
-handle_error(StreamPair, irc_error(451, _, _)) :- 
-    !, register_user(StreamPair), join_bots(StreamPair).
-handle_error(_StreamPair, irc_error(462, _, _)) :-
+    assert(nick(NewNick)).
+
+handle_error(irc_error(422, _, _)) :- !, debug_message("No MOTD provided", []).
+handle_error(irc_error(433, _, _)) :- !, append_nick('_'), register_nick.
+handle_error(irc_error(451, _, _)) :- !, register_user, join_bots.
+handle_error(irc_error(462, _, _)) :-
     !, debug_message("Reregister attempted and failed", []).
-handle_error(_StreamPair, Exception) :- 
+handle_error(Exception) :- 
     debug_message("rethrowing: ~w", [Exception]),
     throw(Exception).
 
@@ -67,48 +86,42 @@ update_auth_count :-
     Y is X + 1,
     assert(auth_count(Y)).
 
-register_user(Stream) :- 
-    stream_pair(Stream, _, WStream),
-    set_stream(WStream, buffer(line)),
+register_user :- 
+    get_outstream(Stream),
     debug_message('Sending User church 8 * : Church Bot', []),
-    format(WStream, "USER church 8 * : Church Bot~n", []).
+    format(Stream, "USER church 8 * : Church Bot~n", []).
 
-register_nick(Stream) :-
-    stream_pair(Stream, _, WStream),
-    set_stream(WStream, buffer(line)),
+register_nick :-
+    get_outstream(Stream),
     nick(Nick),
     debug_message('Sending NICK ~w', Nick),
-    format(WStream, "NICK ~w~n", [Nick]).
+    format(Stream, "NICK ~w~n", [Nick]).
 
-join_bots(Stream) :- 
-    stream_pair(Stream, _, WStream),
-    set_stream(WStream, buffer(line)),
+join_bots :-
+    get_outstream(Stream),
     debug_message('Joining #bots~n', []),
-    format(WStream, "Join #bots~n", []).
+    format(Stream, "Join #bots~n", []).
 
-handle_message(info(Code, _, Msg), _Stream) :-
+handle_message(info(Code, _, Msg)) :-
     debug_message('info message(~w): ~w', [Code, Msg]).
-handle_message(channel_msg(Code, _, Msg), _Stream) :-
+handle_message(channel_msg(Code, _, Msg)) :-
     debug_message('channel message(~w): ~w', [Code, Msg]).
-handle_message(mode(Mode), _Stream) :-
-    debug_message('mode set: ~w', [Mode]).
-handle_message(join(Chan), _Stream) :-
-    debug_message('joined ~w', [Chan]).
-handle_message(topic(_, Channel, Topic), _Stream) :-
+handle_message(mode(Mode)) :- debug_message('mode set: ~w', [Mode]).
+handle_message(join(Chan)) :- debug_message('joined ~w', [Chan]).
+handle_message(topic(_, Channel, Topic)) :-
     debug_message('topic(~w): ~w', [Channel, Topic]).
-handle_message(notice(_, 'AUTH', _), Stream) :-
+handle_message(notice(_, 'AUTH', _)) :-
     auth_count(3),
-    register_nick(Stream),
-    register_user(Stream),
-    join_bots(Stream),
+    register_nick,
+    register_user,
+    join_bots,
     update_auth_count.
-handle_message(notice(_, 'AUTH', _), _Stream) :- update_auth_count.
-handle_message(ping(Reply), Stream) :-
-    stream_pair(Stream, _, WStream),
-    set_stream(WStream, buffer(line)),
+handle_message(notice(_, 'AUTH', _)) :- update_auth_count.
+handle_message(ping(Reply)) :-
+    get_outstream(Stream),
     debug_message('Sending PONG ~w', [Reply]),
-    format(WStream, "PONG :~w~n", Reply).
-handle_message(X, _) :- throw(no_message_handler(X)).
+    format(Stream, "PONG :~w~n", Reply).
+handle_message(X) :- throw(no_message_handler(X)).
 
 read_line(_Stream, end_of_file, []) :- throw(exception(end_of_stream)).
 read_line(_Stream, '\n', []) :- !.
