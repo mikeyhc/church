@@ -117,6 +117,8 @@ handle_message(notice(_, 'AUTH', _)) :-
     join_bots,
     update_auth_count.
 handle_message(notice(_, 'AUTH', _)) :- update_auth_count.
+handle_message(notice(Nick, User, Channel, Notice)) :-
+    debug_message('notice(~w) ~w(~w): ~w', [ Channel, Nick, User, Notice ]).
 handle_message(ping(Reply)) :-
     get_outstream(Stream),
     debug_message('Sending PONG ~w', [Reply]),
@@ -175,6 +177,11 @@ parse_server_msg(privmsg(Nick, User, Channel, Message)) -->
     nonspace(SChannel), " :", nonnl(SMessage), eatnl, 
     { atom_codes(Nick, SNick), atom_codes(User, SUser), 
     atom_codes(Channel, SChannel), atom_codes(Message, SMessage) }.
+parse_server_msg(notice(Nick, User, Channel, Notice)) -->
+    { atom_codes('!', [C|_]) }, ":", notchar(C, SNick), "!", nonspace(SUser), " NOTICE ",
+    nonspace(SChannel), " :", nonspace(SNotice), eatnl,
+    { atom_codes(Nick, SNick), atom_codes(User, SUser),
+    atom_codes(Channel, SChannel), atom_codes(Notice, SNotice) }.
 
 % error cases
 parse_server_msg(false) -->
@@ -188,6 +195,11 @@ parse_server_msg(false, Msg, _Rem) :-
 
 notchar(C, [H|T]) --> [H], { H \= C }, !, notchar(C, T).
 notchar(_, []) --> [].
+
+notcichar(C, [H|T]) --> [H], { (H >= 97 -> I is H - 32; I = H ),
+                               (C >= 97 -> D is C - 32; D = C ),
+                               D \= I }, !, notcichar(C, T).
+notcichar(_, []) --> [].
 
 maybe_colon --> ":".
 maybe_colon --> [].
